@@ -304,4 +304,164 @@ console.log('\n[无数据] 优雅显示')
   env.w.close()
 }
 
+console.log('\n[自适应 v2] 先长气泡 → 再缩「估算」行 → 主行字号不背锅')
+{
+  // jsdom 没有排版引擎，量出来永远是 0 → 只能验「不崩」。这里给窗口装一个按 em 估宽
+  // 的假排版：字号/折行宽度都从挂件真正写的 CSS 变量读，于是 fitBubbleText 的决策
+  // 会反过来改变下一轮的测量值（和真浏览器一样的反馈回路），才算真的测到东西。
+  const FSU = { 'dshwv-label': 66, 'dshwv-period': 104, 'dshwv-amount': 128, 'dshwv-hint': 44 }
+  function installLayout(w, cfg) {
+    const u = cfg.base / 1026
+    const root = el(w, '.dshwv-root')
+    const bub = el(w, '.dshwv-bubble')
+    const box = el(w, '.dshwv-text')
+    const lines = [el(w, '.dshwv-label'), el(w, '.dshwv-amount'), el(w, '.dshwv-hint')]
+    root.getBoundingClientRect = () => ({
+      left: cfg.left, top: cfg.top, width: cfg.base, height: cfg.base,
+      right: cfg.left + cfg.base, bottom: cfg.top + cfg.base, x: cfg.left, y: cfg.top,
+    })
+    w.innerWidth = cfg.vw
+    w.innerHeight = cfg.vh
+    const numv = (name, d) => {
+      const v = parseFloat(bub.style.getPropertyValue(name))
+      return isNaN(v) ? d : v
+    }
+    function fontOf(node) {
+      let f = 40 * u
+      for (const k in FSU) {
+        if (node.className.indexOf(k) === -1) continue
+        f = FSU[k] * u
+        if (k === 'dshwv-hint') f *= numv('--dshw-hfit', 1)
+      }
+      return f
+    }
+    function natOf(node) {
+      let em = 0
+      for (const ch of node.textContent) em += ch.codePointAt(0) > 0x2e80 ? 1 : 0.52
+      return em * fontOf(node)
+    }
+    function layout() {
+      const ms = lines.map((n) => {
+        if (n.style.display === 'none' || !n.textContent) return { w: 0, h: 0 }
+        const lh = fontOf(n) * 1.18
+        const nat = natOf(n)
+        if (n.className.indexOf('dshwv-wrap') !== -1) {
+          const maxw = parseFloat(n.style.maxWidth) || 480 * u * numv('--dshw-bgrow', 1)
+          return { w: Math.min(nat, maxw), h: Math.max(1, Math.ceil(nat / maxw)) * lh }
+        }
+        return { w: nat, h: lh }
+      }).map((m) => ({ w: Math.ceil(m.w), h: Math.ceil(m.h) })) // 浏览器给的也是整像素
+      let total = 0
+      const tops = []
+      for (let i = 0; i < 3; i++) {
+        if (!ms[i].w) { tops.push(0); continue }
+        if (total > 0) total += i === 2 ? Math.ceil(7 * u) : 0
+        tops.push(total)
+        total += ms[i].h
+      }
+      return { ms, tops, total }
+    }
+    for (let i = 0; i < 3; i++) {
+      const idx = i
+      const node = lines[i]
+      const def = (prop, get) => Object.defineProperty(node, prop, { configurable: true, get })
+      def('scrollWidth', () => layout().ms[idx].w)
+      def('offsetWidth', () => layout().ms[idx].w)
+      def('offsetHeight', () => layout().ms[idx].h)
+      def('offsetTop', () => layout().tops[idx])
+    }
+    Object.defineProperty(box, 'offsetHeight', { configurable: true, get: () => layout().total })
+    return { u, bub, lines, layout, numv }
+  }
+  // 独立复核：用最终落到 DOM 上的变量再算一次「还有没有捅出椭圆」
+  function worstOverflow(L) {
+    const g = L.numv('--dshw-bgrow', 1)
+    const ts = L.numv('--dshw-ts', 1)
+    const ai = (373 - 9) * g * L.u // 描边内沿半轴
+    const bi = (232 - 9) * g * L.u
+    const A = ai - 26 * L.u // 再让出横向呼吸位
+    const B = bi - 16 * L.u
+    const cy = (646 - 399 * g) * L.u
+    const py = (646 - 380 * g) * L.u
+    const lay = L.layout()
+    let worst = 0
+    for (let i = 0; i < 3; i++) {
+      const m = lay.ms[i]
+      if (!m.w) continue
+      const center = py + ts * (lay.tops[i] + m.h / 2 - lay.total / 2)
+      const ymax = Math.abs(center - cy) + (ts * m.h * 0.7) / 2 // 只有「墨」需要在椭圆里
+      if (ymax >= B) {
+        worst = Math.max(worst, ymax - B)
+        if (process.env.WHALE_FIT_DEBUG) console.log('   row' + i + ' 纵向溢出 ' + Math.round(ymax - B) + ' (ymax=' + Math.round(ymax) + ' B=' + Math.round(B) + ')')
+        continue
+      }
+      const lim = ai * Math.sqrt(Math.max(0, 1 - (ymax / bi) * (ymax / bi))) - 26 * L.u
+      const over = (ts * m.w) / 2 - lim
+      if (process.env.WHALE_FIT_DEBUG) console.log('   row' + i + ' w=' + m.w + ' h=' + m.h + ' top=' + lay.tops[i] + ' total=' + lay.total + ' ymax=' + Math.round(ymax) + ' lim=' + Math.round(lim) + ' over=' + Math.round(over))
+      worst = Math.max(worst, over)
+    }
+    return worst
+  }
+  const LONG_HINT = '本周 Credits 顶到天花板了，等服务恢复（估算）'
+  async function fitCase(cfg, texts) {
+    const env = makeWindow({ size: { display: 'qwen' } })
+    await sleep(300)
+    const w = env.w
+    clickWhale(w) // 先把泡泡打开，三行才有内容
+    await sleep(120)
+    const L = installLayout(w, cfg)
+    L.lines[0].textContent = texts[0]
+    L.lines[1].textContent = texts[1]
+    L.lines[2].textContent = texts[2]
+    w.dispatchEvent(new w.Event('resize')) // 只重排文字，不改内容 → 确定性触发 fit
+    await sleep(120)
+    return { L, w, env, g: L.numv('--dshw-bgrow', 1), ts: L.numv('--dshw-ts', 1), hf: L.numv('--dshw-hfit', 1), over: worstOverflow(L) }
+  }
+  const ROOMY = { base: 375, left: 880, top: 400, vw: 1280, vh: 800 }
+
+  const tiny = await fitCase(ROOMY, ['余额', '720', '今天'])
+  t('真·短内容不放大也不缩字', tiny.g === 1 && tiny.ts === 1 && tiny.hf === 1, JSON.stringify({ g: tiny.g, ts: tiny.ts, hf: tiny.hf }))
+  t('真·短内容零溢出', tiny.over <= 2, String(Math.round(tiny.over * 10) / 10))
+  tiny.env.w.close()
+
+  // 常态套餐面板那三行本来就把椭圆腰挤满了（就是「依旧有超出」那一档）：
+  // 正解是气泡长一点点，而不是把 128 号字的金额行缩糊
+  const panel = await fitCase(ROOMY, ['Token Plan 本周', '720 Cr', '剩 9280 · 4天12h后重置'])
+  t('常态面板：只长一点气泡，字号一个没缩', panel.g > 1 && panel.g < 1.25 && panel.ts === 1 && panel.hf === 1, JSON.stringify({ g: panel.g, ts: panel.ts, hf: panel.hf }))
+  t('常态面板零溢出', panel.over <= 2, String(Math.round(panel.over * 10) / 10))
+  panel.env.w.close()
+
+  const wide = await fitCase(ROOMY, ['Token Plan 第 2/7 天', '2946 Cr', '随便造~'])
+  t('宽的标题行：靠长气泡解决，不缩字号', wide.g > 1 && wide.ts === 1 && wide.hf === 1, JSON.stringify({ g: wide.g, ts: wide.ts, hf: wide.hf }))
+  t('宽标题行零溢出', wide.over <= 2, String(Math.round(wide.over * 10) / 10))
+  wide.env.w.close()
+
+  const long = await fitCase(ROOMY, ['Token Plan 第 2/7 天', '2946 Cr', LONG_HINT])
+  t('超长提示行：气泡先长大', long.g > 1.05, 'bgrow=' + long.g)
+  t('超长提示行：主行字号一点没缩', long.ts === 1, 'ts=' + long.ts)
+  t('超长提示行：「估算」那行单独缩了', long.hf < 1, 'hfit=' + long.hf)
+  t('超长提示行：仍然零溢出', long.over <= 2, String(Math.round(long.over * 10) / 10))
+  long.env.w.close()
+
+  const huge = await fitCase(ROOMY, ['Token Plan 第 2/7 天', '123.5k Cr', LONG_HINT + '，' + LONG_HINT + '，' + LONG_HINT])
+  t('极端超长：折行兜底', /dshwv-wrap/.test(huge.L.lines[2].className), JSON.stringify(huge.L.lines[2].className))
+  t('极端超长：气泡长到上限附近', huge.g > 1.3, 'bgrow=' + huge.g)
+  t('极端超长：主行几乎没缩', huge.ts >= 0.9, 'ts=' + huge.ts)
+  t('极端超长：依旧零溢出', huge.over <= 2, String(Math.round(huge.over * 10) / 10))
+  huge.env.w.close()
+
+  // 贴屏幕左上角：向上/向外没地方长，必须自动收敛并退回缩字
+  const tight = await fitCase({ base: 375, left: 0, top: 0, vw: 1280, vh: 800 }, ['Token Plan 第 2/7 天', '2946 Cr', LONG_HINT])
+  t('贴边时气泡不长出屏幕', tight.g <= 1.06, 'bgrow=' + tight.g)
+  t('贴边时改用缩字补位', tight.hf < 1 || tight.ts < 1, JSON.stringify({ hf: tight.hf, ts: tight.ts }))
+  t('贴边时依旧零溢出', tight.over <= 2, String(Math.round(tight.over * 10) / 10))
+  tight.env.w.close()
+
+  // 文字块中心要跟着长大后的白区一起挪，否则字会贴着下边缘
+  const moved = await fitCase(ROOMY, ['Token Plan 第 2/7 天', '2946 Cr', LONG_HINT])
+  const wantTy = Math.round((moved.g - 1) * (266 - 646) * moved.L.u * 100) / 100
+  t('放大后文字块跟着挪回白区中心', Math.round(parseFloat(moved.L.bub.style.getPropertyValue('--dshw-ty'))) === Math.round(wantTy), moved.L.bub.style.getPropertyValue('--dshw-ty') + ' vs ' + wantTy)
+  moved.env.w.close()
+}
+
 console.log('\n' + passed + ' 项通过')
