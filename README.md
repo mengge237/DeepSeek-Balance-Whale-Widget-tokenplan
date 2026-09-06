@@ -22,6 +22,12 @@ DeepSeek Harness（DSH）Web 界面右下角的常驻余额挂件：小鲸鱼气
 - 💬 **随机台词**：点击气泡切换随机台词段（加权随机，含峰谷提示/今日已用/gif 动图/卖萌吐槽），再点一次关闭；气泡总显示 5 秒自动收起
 - 📐 随浏览器窗口自动缩放；文字位置/字号与图片联动
 
+- **阿里 Token Plan 用量检测**（新增）：菜单「显示」切到 `阿里 Qwen·Token Plan`，气泡直接显示本周期已用 Credits、剩余、重置倒计时；周额度用到阈值（默认 70%）自动冒泡告警
+- **估算口径与 `token_plan_report.py` 完全对齐**：同一份按量价目 × 100 Credits，`reasoning` 并入输出、`cacheRead+cacheWrite` 并入缓存；数字旁边始终标「估算」
+- **只统计套餐**：按会话事件里的 provider 路由（`tokenplan`）归属，`bailian` 上的同名 `qwen3.8-flash` 不会串进套餐账
+- **0 网络 0 密钥**：用量全部来自本机 `~/.dsh/dsh-usage/usage-ledger.json` + 挂件自己的实时事件账本，不需要百炼 API Key，也不需要控制台 Cookie
+- **轮换显示**：`两者轮换` 每 20s 在余额与套餐用量之间切一次，两家都盯着
+
 ## 目录结构
 
 ```text
@@ -194,6 +200,69 @@ Remove-Item "$web\DSniang02.png" -ErrorAction SilentlyContinue
 ### 每轮对话消耗（无需任何凭据）
 
 「每轮对话消耗统计」直接监听 DSH 本机会话事件，按模型真实 usage 换算金额（与今日已用同一套峰谷定价表），**不需要** `DEEPSEEK_PLATFORM_TOKEN`。
+
+## 阿里 Token Plan（Qwen）用量检测
+
+### 为什么是「估算」
+
+阿里云**没有**给 API Key 暴露任何套餐用量接口：`token-plan.cn-beijing.maas.aliyuncs.com` 下
+`/v1/usage`、`/v1/quota`、`/v1/subscription` 全部被 chat 路由兜底成
+`400 InvalidParameter "Required parameter \"model\" missing"`，一次 chat 调用的响应头里也只有耗时字段、
+没有任何额度信息（2026-09-05 实测）。官方 `bl usage token-plan` 走的是控制台 **Cookie** 而不是 API Key，
+所以挂件套用现有「填 Key 就能看余额」的路子是做不到的 —— 只能本地估。
+
+估算公式（与 `~/token-plan-tools/token_plan_report.py` 同一份价目，改价两处都要改）：
+
+```
+Credits ≈ ( 非缓存输入×输入价 + (输出+推理)×输出价 + (cacheRead+cacheWrite)×缓存价 ) / 1e6 × 100
+```
+
+价目（元/百万 token）：`qwen3.8-flash 0.8/2.7/0.1`、`qwen3.8-max 12/36/1.5`、`qwen3.7-max 12/36/2.4`、
+`qwen3.7-plus 2/8/0.4`、`qwen3.6-flash 2/8/0.2`、`qwen3.6-plus 2/8/0.4`、`glm-5.2 8/28/2`、
+`deepseek-v4-flash 2/12/0.2`、`deepseek-v4-pro 9/27/0.9`；表里没有的模型退回 flash 价目并记进 `unknownModels`
+（宁可估高也不漏计）。实际以阿里云控制台为准。
+
+### 数据来源与优先级
+
+| 来源 | 路径 | 说明 |
+| --- | --- | --- |
+| dsh-usage 账本 | `~/.dsh/dsh-usage/usage-ledger.json` | 首选：逐日逐模型逐 provider，跨重启，含子代理流量 |
+| 挂件实时账本 | `~/.dsh/.dshw-qwen.json` | 事件流现算的兜底（`dsh-usage` 没装/没落盘时也能出数） |
+| 订阅起始日 | `~/token-plan-tools/state/state.json` 的 `subscribed` | 可选窗口锚点，与报表同一口径 |
+
+两个来源描述的是同一批调用，所以**按天取较大值合并，绝不相加**（`mergeDays`）。
+payload 里的 `source` 会告诉你是 `ledger` / `live` / `ledger+live` / `none`。
+
+### 周窗口与告警
+
+- 套餐是「自首次调用起 7 天一个固定周期，Standard = 10,000 Credits，5 小时限流当前暂停、过期不结转」。
+- 锚点优先取配置 `qwenWindowAnchor`，其次 token-plan-tools 的 `subscribed`，再退到「账本里第一个有量的一天」，
+  最后才是「现在」。返回值里 `anchorSource` 会说明用的哪种，`dayIndex`（第 N/7 天）与 `resetInMs` 都由它推出。
+- 阈值默认 70%（菜单「套餐告警」可改）。达到即 `warn`，`≥max(90%, 阈值+20)` 升 `high`，100% 或抓到 429 触顶
+  为 `exhausted`。**同一周期同一级别只自动冒一次泡**（`shouldAnnounce` 由服务端现算并记账，多标签页也只弹一次），
+  级别升级或换新周期会再提醒；点一下气泡即可确认关闭。
+- 套餐轮次的「上一轮对话消耗」泡泡改显示 `≈ x Cr`；`turn/end` 里抓到 quota 类错误会记 `quotaHitAt`，
+  面板转红并在 48h 内保持警报。
+
+### 接口
+
+`GET /dsh-whale/qwen.json`（本机免鉴权，30s 汇总缓存，配置变更即时失效）：
+
+```json
+{ "ok": true, "estimated": true, "source": "ledger", "cap": 10000,
+  "used": 582.3, "remaining": 9417.7, "pct": 5.8, "dayIndex": 1, "daysLeft": 7,
+  "resetInMs": 518400000, "anchorSource": "first-usage-day",
+  "today": { "credits": 582.34, "tokens": 24630654, "calls": 355 },
+  "series": [{ "date": "2026-09-05", "credits": 582.3, "tokens": 24630654, "calls": 355 }],
+  "byModel": [{ "model": "qwen3.8-flash", "credits": 582.3, "calls": 355 }],
+  "unknownModels": [],
+  "payg": { "windowCny": 5.82, "planPriceCny": 139, "roiPercent": 4.2 },
+  "quotaHitAt": null,
+  "alert": { "level": "ok", "label": "", "pct": 5.8, "warnPct": 70, "shouldAnnounce": false } }
+```
+
+无账本时返回 `{"ok": false, "error": "NO_DATA", ...}` 且 HTTP 仍是 200，前端显示
+「暂无套餐用量记录」，不影响 DeepSeek 余额那一套。
 
 ## 验证
 
