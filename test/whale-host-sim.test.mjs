@@ -168,6 +168,24 @@ t('级别至少 warn 且带 shouldAnnounce', ['warn', 'high', 'exhausted'].index
 const q2 = (await request('GET', '/dsh-whale/qwen.json?r=4')).json
 t('同窗口同级不重复冒泡', q2.alert.shouldAnnounce === false)
 
+console.log('\n[事件] 归属收紧：不该算触顶的两种失败')
+const qh0 = (await request('GET', '/dsh-whale/qwen.json?r=5')).json.quotaHitAt || 0
+emit('session/event', { id: 's9' }, { type: 'request/context', data: { provider: 'bailian', model: 'qwen3.8-flash' } })
+emit('session/event', { id: 's9' }, {
+  type: 'turn/end',
+  data: { turn: 1, reason: { kind: 'error', error: { message: '429 Allocated quota exceeded, please try later', code: 'QUOTA' } } },
+})
+const qa = (await request('GET', '/dsh-whale/qwen.json?r=6')).json
+t('非套餐 provider 的 quota 报错不刷新触顶', (qa.quotaHitAt || 0) === qh0, JSON.stringify({ before: qh0, after: qa.quotaHitAt }))
+emit('session/event', { id: 's1' }, { type: 'request/context', data: { provider: 'tokenplan', model: 'qwen3.8-flash' } })
+emit('session/event', { id: 's1' }, {
+  type: 'turn/end',
+  data: { turn: 3, reason: { kind: 'error', error: { message: '429 Too many requests, please slow down', code: 'RATE_LIMITED' } } },
+})
+const qb = (await request('GET', '/dsh-whale/qwen.json?r=7')).json
+t('纯限流（无额度字样）不算触顶', (qb.quotaHitAt || 0) === qh0, JSON.stringify({ before: qh0, after: qb.quotaHitAt }))
+t('限流也不会压低已显示的用量', qb.pct > 0 && qb.used > 0, 'pct=' + qb.pct)
+
 console.log('\n[配置] size.json 往返')
 const put = await request('PUT', '/dsh-whale/size.json', {
   scale: 0.3,
