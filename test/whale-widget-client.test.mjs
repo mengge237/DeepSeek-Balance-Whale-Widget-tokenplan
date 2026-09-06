@@ -83,7 +83,6 @@ function makeWindow(opts) {
       turnCostCloseMs: 0,
       scrollGapOn: false,
       scrollGapPx: 0,
-      theme: 'original',
       display: 'qwen',
       qwenWarnPct: 70,
     },

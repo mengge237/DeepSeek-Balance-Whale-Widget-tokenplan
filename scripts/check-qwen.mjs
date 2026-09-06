@@ -5,7 +5,7 @@
 //
 // 检查项：
 //   1) 语法：lib/index.js / lib/tokenplan-usage.js / 注入前端的 WIDGET_JS
-//   2) 口径：与 ~/token-plan-tools/token_plan_report.py 逐日 Credits 对比（容差 1%）
+//   2) 口径：与外部按量报表脚本逐日 Credits 对比（设 TOKENPLAN_REPORT 才跑，容差 1%）
 //   3) 真实数据：读 ~/.dsh/dsh-usage/usage-ledger.json 跑一遍 summarize()
 //   4) 线上路由：GET http://127.0.0.1:3080/dsh-whale/qwen.json（404 说明还没重启 dsh web）
 import fs from 'node:fs'
@@ -95,10 +95,10 @@ if (!fs.existsSync(LEDGER)) {
   ok('未知模型清单已标记', Array.isArray(s.unknownModels))
 
   // —— 3) 与 python 报表逐日对账 ——
-  console.log('\n[3] 与 token_plan_report.py 对账（容差 1%）')
-  const pyScript = path.join(os.homedir(), 'token-plan-tools', 'token_plan_report.py')
+  console.log('\n[3] 与外部按量报表脚本对账（需设环境变量 TOKENPLAN_REPORT，容差 1%）')
+  const pyScript = process.env.TOKENPLAN_REPORT || ''
   if (!fs.existsSync(pyScript)) {
-    info('跳过（没有 token_plan_report.py）', pyScript)
+    info('跳过（未设置环境变量 TOKENPLAN_REPORT）', pyScript)
   } else {
     let py = null
     try {

@@ -23,7 +23,7 @@ DeepSeek Harness（DSH）Web 界面右下角的常驻余额挂件：小鲸鱼气
 - 📐 随浏览器窗口自动缩放；文字位置/字号与图片联动
 
 - **阿里 Token Plan 用量检测**（新增）：菜单「显示」切到 `阿里 Qwen·Token Plan`，气泡直接显示本周期已用 Credits、剩余、重置倒计时；周额度用到阈值（默认 70%）自动冒泡告警
-- **估算口径与 `token_plan_report.py` 完全对齐**：同一份按量价目 × 100 Credits，`reasoning` 并入输出、`cacheRead+cacheWrite` 并入缓存；数字旁边始终标「估算」
+- **估算口径与按量计费报表脚本一致**：同一份按量价目 × 100 Credits，`reasoning` 并入输出、`cacheRead+cacheWrite` 并入缓存；数字旁边始终标「估算」
 - **只统计套餐**：按会话事件里的 provider 路由（`tokenplan`）归属，`bailian` 上的同名 `qwen3.8-flash` 不会串进套餐账
 - **0 网络 0 密钥**：用量全部来自本机 `~/.dsh/dsh-usage/usage-ledger.json` + 挂件自己的实时事件账本，不需要百炼 API Key，也不需要控制台 Cookie
 - **账户列表**：菜单「显示」下是两行账户（DeepSeek / Token Plan），每行直接给出「当前值 + 累计值」，点哪行气泡就显示哪行；不再有 20s 轮换
@@ -212,7 +212,7 @@ Remove-Item "$web\DSniang02.png" -ErrorAction SilentlyContinue
 没有任何额度信息（2026-09-05 实测）。官方 `bl usage token-plan` 走的是控制台 **Cookie** 而不是 API Key，
 所以挂件套用现有「填 Key 就能看余额」的路子是做不到的 —— 只能本地估。
 
-估算公式（与 `~/token-plan-tools/token_plan_report.py` 同一份价目，改价两处都要改）：
+估算公式（价目取阿里云百炼按量单价，`Credits = 人民币 × 100`；若你另有按量报表脚本，两边价目要一起改）：
 
 ```
 Credits ≈ ( 非缓存输入×输入价 + (输出+推理)×输出价 + (cacheRead+cacheWrite)×缓存价 ) / 1e6 × 100
@@ -229,7 +229,7 @@ Credits ≈ ( 非缓存输入×输入价 + (输出+推理)×输出价 + (cacheRe
 | --- | --- | --- |
 | dsh-usage 账本 | `~/.dsh/dsh-usage/usage-ledger.json` | 首选：逐日逐模型逐 provider，跨重启，含子代理流量 |
 | 挂件实时账本 | `~/.dsh/.dshw-qwen.json` | 事件流现算的兜底（`dsh-usage` 没装/没落盘时也能出数） |
-| 订阅起始日 | `~/token-plan-tools/state/state.json` 的 `subscribed` | 可选窗口锚点，与报表同一口径 |
+| 周窗口起点 | 配置 `qwenWindowAnchor`（`YYYY-MM-DD`） | 可选锚点；不填则自动退到「账本首个有量日」 |
 
 两个来源描述的是同一批调用，所以**按天取较大值合并，绝不相加**（`mergeDays`）。
 payload 里的 `source` 会告诉你是 `ledger` / `live` / `ledger+live` / `none`。
@@ -247,8 +247,7 @@ payload 里的 `source` 会告诉你是 `ledger` / `live` / `ledger+live` / `non
 ### 周窗口与告警
 
 - 套餐是「自首次调用起 7 天一个固定周期，Standard = 10,000 Credits，5 小时限流当前暂停、过期不结转」。
-- 锚点优先取配置 `qwenWindowAnchor`，其次 token-plan-tools 的 `subscribed`，再退到「账本里第一个有量的一天」，
-  最后才是「现在」。返回值里 `anchorSource` 会说明用的哪种，`dayIndex`（第 N/7 天）与 `resetInMs` 都由它推出。
+- 锚点优先取配置 `qwenWindowAnchor`，否则退到「账本里第一个有量的一天」，最后才是「现在」。返回值里 `anchorSource` 会说明用的哪种，`dayIndex`（第 N/7 天）与 `resetInMs` 都由它推出。
 - 阈值默认 70%（菜单「套餐告警」可改）。达到即 `warn`，`≥max(90%, 阈值+20)` 升 `high`，100% 或抓到 429 触顶
   为 `exhausted`。**同一周期同一级别只自动冒一次泡**（`shouldAnnounce` 由服务端现算并记账，多标签页也只弹一次），
   级别升级或换新周期会再提醒；点一下气泡即可确认关闭。

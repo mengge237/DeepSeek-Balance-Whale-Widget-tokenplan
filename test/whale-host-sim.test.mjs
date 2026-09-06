@@ -181,7 +181,6 @@ const put = await request('PUT', '/dsh-whale/size.json', {
   turnCostCloseMs: 5000,
   scrollGapOn: false,
   scrollGapPx: 17,
-  theme: 'original',
   display: 'qwen',
   qwenWarnPct: 20,
 })

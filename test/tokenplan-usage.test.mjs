@@ -18,7 +18,7 @@ function t(name, fn) {
 const DAY = TP.DAY_MS
 const dayKey = (n) => TP.localDayKey(n)
 
-t('priceForModel 与 token_plan_report.py RATES 对齐', () => {
+t('priceForModel 与按量价目对齐（Credits = ¥ × 100）', () => {
   assert.deepEqual(TP.priceForModel('qwen3.8-flash'), { price: [0.8, 2.7, 0.1], known: true })
   assert.deepEqual(TP.priceForModel('QWEN3.8-MAX'), { price: [12, 36, 1.5], known: true })
   assert.deepEqual(TP.priceForModel('glm-5.2'), { price: [8, 28, 2], known: true })

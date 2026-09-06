@@ -218,7 +218,7 @@ resp-start-time / x-envoy-upstream-service-time`，没有任何额度字段。�
 
 ### 口径必须与 Python 报表同源
 
-`lib/tokenplan-usage.js` 的 `PRICE_CNY_PER_M` 是 `~/token-plan-tools/token_plan_report.py` 里
+`lib/tokenplan-usage.js` 的 `PRICE_CNY_PER_M` 是外部按量报表脚本（`token_plan_report.py`）里
 `RATES` 的镜像，`Credits = ¥ × 100`，`reasoning` 并入输出、`cacheRead+cacheWrite` 并入缓存，
 `inputTokens` 按 harness 语义就是「非缓存输入」（不再减一次 cache）。改价必须两处一起改，
 `scripts/check-qwen.mjs` 的 `[3]` 会逐日对账（容差 1%）把不一致钉死。
@@ -244,8 +244,7 @@ resp-start-time / x-envoy-upstream-service-time`，没有任何额度字段。�
 ### 窗口锚点
 
 官方口径是「自首次调用起 7 天」，本地看不到真实锚点，所以 `resolveAnchor` 依次尝试：
-配置 `qwenWindowAnchor` → `~/token-plan-tools/state/state.json` 的 `subscribed` →
-账本里第一个有量的一天 → 现在。`anchorSource` 一定回给前端，别让用户以为这是官方数。
+配置 `qwenWindowAnchor` → 账本里第一个有量的一天 → 现在。`anchorSource` 一定回给前端，别让用户以为这是官方数。
 
 ### 气泡文字必须自适应（长读数会顶出白区）
 
