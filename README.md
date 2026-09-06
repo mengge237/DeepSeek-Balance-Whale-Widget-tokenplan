@@ -26,7 +26,8 @@ DeepSeek Harness（DSH）Web 界面右下角的常驻余额挂件：小鲸鱼气
 - **估算口径与 `token_plan_report.py` 完全对齐**：同一份按量价目 × 100 Credits，`reasoning` 并入输出、`cacheRead+cacheWrite` 并入缓存；数字旁边始终标「估算」
 - **只统计套餐**：按会话事件里的 provider 路由（`tokenplan`）归属，`bailian` 上的同名 `qwen3.8-flash` 不会串进套餐账
 - **0 网络 0 密钥**：用量全部来自本机 `~/.dsh/dsh-usage/usage-ledger.json` + 挂件自己的实时事件账本，不需要百炼 API Key，也不需要控制台 Cookie
-- **轮换显示**：`两者轮换` 每 20s 在余额与套餐用量之间切一次，两家都盯着
+- **账户列表**：菜单「显示」下是两行账户（DeepSeek / Token Plan），每行直接给出「当前值 + 累计值」，点哪行气泡就显示哪行；不再有 20s 轮换
+- **自适应气泡**：三行文字按泡泡白区宽度自动等比缩放（缩到 0.62 仍放不下就让提示行折行），套餐那些长读数不会顶出框外
 
 ## 目录结构
 
@@ -233,6 +234,16 @@ Credits ≈ ( 非缓存输入×输入价 + (输出+推理)×输出价 + (cacheRe
 两个来源描述的是同一批调用，所以**按天取较大值合并，绝不相加**（`mergeDays`）。
 payload 里的 `source` 会告诉你是 `ledger` / `live` / `ledger+live` / `none`。
 
+### 显示与自适应
+
+- 菜单「显示」下的账户列表：`DeepSeek` 行显示 `¥ 余额 · 今 ¥ 今日已用`，`Token Plan` 行显示
+  `已用/上限 · 累计 N Cr`（累计含历史周期），点行即选中，选中态高亮并写回配置 `display`（`ds` / `qwen`）。
+- 三行气泡（标题 66 / 金额 128 / 提示 56，单位都是 `--dshw-u = 底座宽度/1026`）写完会跑一次
+  `fitBubbleText()`：取三行里最宽的 `scrollWidth` 与白区可用宽度的比值写进 `--dshw-fit` 缩放，
+  比值低于 0.62 改让提示行折行。缩放挂在 `.dshwv-text` 的 transform 上，左吸附翻转的分支也一起带上了。
+- 读数本身也按字号收敛过长度（金额行只放 `7250 Cr`、提示行 `剩 2750 · 4天12h后重置`），
+  自适应只是兜底，不靠它硬塞。
+
 ### 周窗口与告警
 
 - 套餐是「自首次调用起 7 天一个固定周期，Standard = 10,000 Credits，5 小时限流当前暂停、过期不结转」。
@@ -253,13 +264,17 @@ payload 里的 `source` 会告诉你是 `ledger` / `live` / `ledger+live` / `non
   "used": 582.3, "remaining": 9417.7, "pct": 5.8, "dayIndex": 1, "daysLeft": 7,
   "resetInMs": 518400000, "anchorSource": "first-usage-day",
   "today": { "credits": 582.34, "tokens": 24630654, "calls": 355 },
-  "series": [{ "date": "2026-09-05", "credits": 582.3, "tokens": 24630654, "calls": 355 }],
+  "series": [{ "date": "2026-09-05", "credits": 1434.5, "tokens": 60210000, "calls": 900, "future": false }],
   "byModel": [{ "model": "qwen3.8-flash", "credits": 582.3, "calls": 355 }],
   "unknownModels": [],
   "payg": { "windowCny": 5.82, "planPriceCny": 139, "roiPercent": 4.2 },
   "quotaHitAt": null,
   "alert": { "level": "ok", "label": "", "pct": 5.8, "warnPct": 70, "shouldAnnounce": false } }
 ```
+
+`series` 是**本计费周期的第 1..7 天**（左→右），不是「最近 7 个自然日」：窗口不从周一开始时
+后者会和 `used`/`dayIndex` 错开，柱子合计对不上面板已用（自检里钉了一条 `used == Σseries`）。
+没到的日子 `future: true` 且计 0。
 
 无账本时返回 `{"ok": false, "error": "NO_DATA", ...}` 且 HTTP 仍是 200，前端显示
 「暂无套餐用量记录」，不影响 DeepSeek 余额那一套。

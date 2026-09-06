@@ -132,7 +132,8 @@ emit('session/event', { id: 's1' }, { type: 'turn/end', data: { turn: 1, reason:
 let q = (await request('GET', '/dsh-whale/qwen.json')).json
 t('qwen.json ok=true（仅靠事件流实时账本）', q.ok === true, 'source=' + q.source)
 t('Credits = 112（价目精确对账）', Math.abs(q.used - 112) < 0.01, 'used=' + q.used)
-t('窗口第 1 天', q.dayIndex === 1 && q.windowIndex >= 0, 'dayIndex=' + q.dayIndex)
+// 不断言具体第几天：锚点是「账本里第一个有量的一天」，跨过午夜就会 +1（产品对，日期敏感）
+t('窗口天数落在 1..7 且与重置一致', q.dayIndex >= 1 && q.dayIndex <= 7 && q.daysLeft === 7 - q.dayIndex + 1 && q.windowIndex >= 0, 'dayIndex=' + q.dayIndex + ' daysLeft=' + q.daysLeft)
 t('cap 默认 10000（Standard）', q.cap === 10000)
 t('estimated 标记为真', q.estimated === true)
 t('byModel 只有 qwen3.8-flash', q.byModel.length === 1 && q.byModel[0].model === 'qwen3.8-flash', JSON.stringify(q.byModel))

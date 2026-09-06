@@ -31,6 +31,7 @@ function qwenOk(over) {
       provider: 'tokenplan',
       cap: 10000,
       used: 720,
+      usedAllTime: 1500,
       remaining: 9280,
       pct: 7.2,
       dayIndex: 3,
@@ -179,11 +180,17 @@ function t(name, cond, extra) {
     console.log('  FAIL ' + name + (extra ? '  ' + extra : ''))
   }
 }
-function findDisplaySelect(w) {
-  var list = Array.prototype.slice.call(w.document.querySelectorAll('select'))
-  return list.filter(function (s) {
-    return Array.prototype.some.call(s.options, function (o) { return o.value === 'qwen' })
-  })[0]
+function acctRow(w, key) {
+  return w.document.querySelector('.dshwv-acct-item[data-acct="' + key + '"]')
+}
+function acctNums(w, key) {
+  var r = acctRow(w, key)
+  var n = r && r.querySelector('.dshwv-acct-nums')
+  return n ? n.textContent : '(missing)'
+}
+function pickAcct(w, key) {
+  // 菜单里的行点在鲸鱼轮廓外，走按钮自己的 click
+  acctRow(w, key).dispatchEvent(new w.MouseEvent('click', { bubbles: true, cancelable: true, clientX: 4000, clientY: 4000 }))
 }
 
 console.log('\n[Qwen 显示态] 超阈值自动冒泡，点击确认后回到 Credits')
@@ -195,22 +202,19 @@ console.log('\n[Qwen 显示态] 超阈值自动冒泡，点击确认后回到 Cr
   t('shouldAnnounce 自动冒泡', el(w, '.dshwv-bubble').className.indexOf('dshwv-bubble-open') !== -1)
   t('告警标题「周额度告警」', txt(w, '.dshwv-label') === '周额度告警', JSON.stringify(txt(w, '.dshwv-label')))
   t('告警金额行为百分比', txt(w, '.dshwv-amount') === '72.5%', JSON.stringify(txt(w, '.dshwv-amount')))
-  t('告警提示行给出已用/剩余', /已用 7250\/10\.0k · 剩 2750/.test(txt(w, '.dshwv-hint')), JSON.stringify(txt(w, '.dshwv-hint')))
+  t('告警提示行给出已用/剩余', /7250\/10\.0k · 剩 2750/.test(txt(w, '.dshwv-hint')), JSON.stringify(txt(w, '.dshwv-hint')))
   t('告警金额行变红', el(w, '.dshwv-amount').style.color === 'rgb(224, 67, 63)', el(w, '.dshwv-amount').style.color)
   clickBubble(w)
   await sleep(150)
   t('点击即确认关闭告警', el(w, '.dshwv-bubble').className.indexOf('dshwv-bubble-open') === -1)
   // 关闭瞬间不闪现余额（沿用原挂件约定：文字等下次 showBubble 再恢复），
   // 但渲染锁必须解除 —— 切一次显示态就能看到常态画面
-  const dispSel = findDisplaySelect(w)
-  dispSel.value = 'ds'
-  dispSel.dispatchEvent(new w.Event('change'))
+  pickAcct(w, 'ds')
   await sleep(120)
   t('锁解除后余额态能正常渲染', txt(w, '.dshwv-amount') === '¥ 123.45', JSON.stringify(txt(w, '.dshwv-amount')))
-  dispSel.value = 'qwen'
-  dispSel.dispatchEvent(new w.Event('change'))
+  pickAcct(w, 'qwen')
   await sleep(120)
-  t('金额行 = 7250 Cr（不是 ¥）', txt(w, '.dshwv-amount') === '7250', JSON.stringify(txt(w, '.dshwv-amount')))
+  t('金额行 = 7250 Cr（不是 ¥）', txt(w, '.dshwv-amount') === '7250 Cr', JSON.stringify(txt(w, '.dshwv-amount')))
   t('提示行含剩余与重置', /剩 2750/.test(txt(w, '.dshwv-hint')) && /重置/.test(txt(w, '.dshwv-hint')), JSON.stringify(txt(w, '.dshwv-hint')))
   t('超阈值常态显示转橙色警示', el(w, '.dshwv-amount').style.color === 'rgb(224, 122, 31)', el(w, '.dshwv-amount').style.color)
   env.w.close()
@@ -233,14 +237,16 @@ console.log('\n[菜单] 显示切换与阈值写回')
   const env = makeWindow({ size: { display: 'ds' }, qwen: qwenOk() })
   await sleep(300)
   const w = env.w
-  const dispSel = findDisplaySelect(w)
-  t('「显示」下拉 3 项', !!dispSel && dispSel.options.length === 3, dispSel ? Array.prototype.map.call(dispSel.options, function (o) { return o.value }).join('/') : '')
+  t('列表两行账户（轮换已去掉）', !!acctRow(w, 'ds') && !!acctRow(w, 'qwen') && !acctRow(w, 'rotate'))
+  t('默认选中 DeepSeek 行', acctRow(w, 'ds').className.indexOf('dshwv-acct-on') !== -1, acctRow(w, 'ds').className)
+  t('DeepSeek 行 = 余额 + 今日', /¥ 123\.45/.test(acctNums(w, 'ds')) && /今 ¥ 6\.70/.test(acctNums(w, 'ds')), JSON.stringify(acctNums(w, 'ds')))
+  t('Token Plan 行 = 已用/上限 + 累计', /720\/10\.0k/.test(acctNums(w, 'qwen')) && /累计 1500 Cr/.test(acctNums(w, 'qwen')), JSON.stringify(acctNums(w, 'qwen')))
   const warnInput = Array.prototype.slice.call(w.document.querySelectorAll('input[type=number]')).filter(function (i) { return i.value === '70' })[0]
   t('「套餐告警」阈值输入存在', !!warnInput)
-  dispSel.value = 'qwen'
-  dispSel.dispatchEvent(new w.Event('change'))
+  pickAcct(w, 'qwen')
   await sleep(120)
-  t('切换后金额行变 Credits', txt(w, '.dshwv-amount') === '720', JSON.stringify(txt(w, '.dshwv-amount')))
+  t('点行后选中态转移', acctRow(w, 'qwen').className.indexOf('dshwv-acct-on') !== -1 && acctRow(w, 'ds').className.indexOf('dshwv-acct-on') === -1)
+  t('切换后金额行变 Credits', txt(w, '.dshwv-amount') === '720 Cr', JSON.stringify(txt(w, '.dshwv-amount')))
   const put = env.putCalls[env.putCalls.length - 1]
   t('PUT 带 display=qwen', !!put && put.body.display === 'qwen', put ? JSON.stringify(put.body.display) : 'no PUT')
   warnInput.value = '55'
@@ -262,8 +268,8 @@ console.log('\n[点鲸鱼] Qwen 态先看套餐详情')
   clickBubble(w)
   await sleep(700) // swapBubbleContent 有淡出→换字→淡入的节奏，给足时间
   t('标题行给出窗口第几天', /^第 \d\/7 天/.test(txt(w, '.dshwv-label')), JSON.stringify(txt(w, '.dshwv-label')))
-  t('金额行是用量/上限', txt(w, '.dshwv-amount') === '720 / 10.0k Cr', JSON.stringify(txt(w, '.dshwv-amount')))
-  t('提示行含今日与主力模型', /今日 413 Cr/.test(txt(w, '.dshwv-hint')) && /qwen3\.8-flash/.test(txt(w, '.dshwv-hint')), JSON.stringify(txt(w, '.dshwv-hint')))
+  t('金额行是本周用量', txt(w, '.dshwv-amount') === '720 Cr', JSON.stringify(txt(w, '.dshwv-amount')))
+  t('提示行含今日与主力模型', /今日 413 ·/.test(txt(w, '.dshwv-hint')) && /qwen3\.8-flash/.test(txt(w, '.dshwv-hint')), JSON.stringify(txt(w, '.dshwv-hint')))
   env.w.close()
 }
 
@@ -275,6 +281,16 @@ console.log('\n[每轮消耗] 套餐轮次用 Credits')
   t('标题「上一轮套餐消耗:」', txt(w, '.dshwv-label') === '上一轮套餐消耗:', JSON.stringify(txt(w, '.dshwv-label')))
   t('金额行 ≈ 42.5 Cr', txt(w, '.dshwv-amount') === '≈ 42.5 Cr', JSON.stringify(txt(w, '.dshwv-amount')))
   t('提示行标注估算', /估算/.test(txt(w, '.dshwv-hint')), JSON.stringify(txt(w, '.dshwv-hint')))
+  env.w.close()
+}
+
+console.log('\n[自适应] 文字过长时不该把脚本搞崩（jsdom 宽度 0 → fit 早退）')
+{
+  const env = makeWindow({ size: { display: 'qwen' }, qwen: qwenOk({ used: 123456, cap: 10000, remaining: 0, pct: 1234.6, usedAllTime: 999999 }) })
+  await sleep(3200)
+  const w = env.w
+  t('超长读数仍能渲染', txt(w, '.dshwv-amount').indexOf('123.5k') !== -1, JSON.stringify(txt(w, '.dshwv-amount')))
+  t('超长时不抛异常（泡泡文字在）', txt(w, '.dshwv-hint').length > 0, JSON.stringify(txt(w, '.dshwv-hint')))
   env.w.close()
 }
 

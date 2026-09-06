@@ -247,9 +247,22 @@ resp-start-time / x-envoy-upstream-service-time`，没有任何额度字段。�
 配置 `qwenWindowAnchor` → `~/token-plan-tools/state/state.json` 的 `subscribed` →
 账本里第一个有量的一天 → 现在。`anchorSource` 一定回给前端，别让用户以为这是官方数。
 
+### 气泡文字必须自适应（长读数会顶出白区）
+
+三行文字的字号是 66 / 128 / 56 个 `--dshw-u`（`--dshw-u = 底座像素/1026`），泡泡白区约 560u 宽。
+余额态最长是 `¥ 123.45`（8 字）刚好，套餐态一句 `Cr · 剩 2750 · 4天12h后重置` 直接溢出框外。
+两层处理：① 文案按字号收敛长度（金额行只 `7250 Cr`，单位放标题行）；
+② 每次写完文字（`applyBubbleLines`/`setHint`/`restoreBubbleLines`/`showCostBubble`/`showQwenAlert`/`render`/`resize`）
+调 `scheduleFit()`，rAF 合并后取三行 `scrollWidth` 最大值算 `k = 白区宽/实测宽` 写进 `--dshw-fit`（下限 .62），
+CSS 用 `transform: translate(-50%,-50%) scale(var(--dshw-fit,1))`（左吸附分支带 `scaleX(-1)`）；
+仍放不下就给提示行加 `dshwv-wrap` 折行。jsdom 里 `getBoundingClientRect().width===0` → `fitBubbleText` 早退，
+所以这条不影响单测，只有真浏览器会触发。
+
 ### 显示与告警
 
-- `display` 三态：`ds` / `qwen` / `rotate`（20s 轮换），存进原有 `.dshw-size.json`
+- `display` 两态：`ds` / `qwen`，存进原有 `.dshw-size.json`（原先还做过 20s 轮换 `rotate`，用户说不要，
+  已删；宿主 `normalizeDisplay` 把老配置里的 `rotate` 归一成 `ds`，不会因为读到一个陌生值就整块配置崩掉）。
+  菜单里换成**账户列表**：每行「当前值 + 累计值」，点行选中等气泡显示哪个。
   （`writeSizeConfig` 已从 12 个位置参数改成对象入参，加字段不再疼）。
 - Qwen 态金额行放 Credits、提示行放 `剩 N · X天Yh后重置`，超阈值转橙、触顶/≥90% 转红；
   `state.currency` 那条动画在 Qwen 态只更新缓存值不动 DOM（`animateAmount` 顶部有守卫）。
