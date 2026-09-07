@@ -179,4 +179,97 @@ t('fmtCreditsShort 单位收敛', () => {
   assert.equal(TP.fmtCreditsShort(0), '0')
 })
 
+// —— 触顶 / 限流 判定：本机 2026-09-07 那次误判的回归测试 ——
+// 造一份 used/cap 可控的 summarize 输入
+const mkDay = (credits) => ({
+  credits,
+  payg: credits / 100,
+  tokens: credits * 1000,
+  calls: 3,
+  models: { 'qwen3.8-flash': { credits, tokens: credits * 1000, calls: 3 } },
+  unknown: {},
+})
+function sumWith(usedCr, capCr, extra) {
+  const now = Date.UTC(2026, 8, 7, 12, 0, 0)
+  const key = TP.localDayKey(now)
+  return TP.summarize(
+    Object.assign(
+      {
+        ledgerDays: {},
+        selfDays: { [key]: mkDay(usedCr) },
+        cfg: TP.normalizeConfig({ qwenCap: capCr, qwenWindowAnchor: key }),
+        nowMs: now,
+      },
+      extra || {},
+    ),
+  )
+}
+// 逐字来自本机 一次真实 429 的 turn/end（本机抓包）：每分钟 TPM 打满
+const TPM_429 = {
+  message:
+    '429: {"message":"Allocated quota exceeded, please increase your quota limit. ' +
+    'For details, see: https://www.alibabacloud.com/help/en/model-studio/error-code#token-limit",' +
+    '"id":"c82db889-37e8-4c02-9064-4f0253385854","type":"insufficient_quota","code":"insufficient_quota"}',
+  code: 'QUOTA',
+}
+
+t('classifyFailure：429/限流家族一律不算触顶（哪怕文案带 quota/exhausted）', () => {
+  assert.equal(TP.classifyFailure(TPM_429), 'throttle')
+  assert.equal(TP.classifyFailure({ message: '429 Too many requests, please slow down', code: 'RATE_LIMITED' }), 'throttle')
+  assert.equal(TP.classifyFailure({ message: 'Allocated quota exceeded, please try later', code: 'Throttling.AllocationQuota', status: 429 }), 'throttle')
+  // 免费额度与别的 provider 的余额问题都不该进套餐触顶
+  assert.equal(TP.classifyFailure({ message: '403: Free quota exhausted. please add funds', code: 'AUTH', status: 403 }), 'freeQuota')
+  assert.equal(TP.classifyFailure({ message: 'Insufficient Balance', code: 'QUOTA', status: 402 }), 'cap')
+  assert.equal(TP.classifyFailure({ message: '本周套餐额度已用尽，请等待重置', code: 'QUOTA', status: 403 }), 'cap')
+  assert.equal(TP.classifyFailure({ message: 'Connection error.', code: 'TRANSPORT' }), 'other')
+  assert.equal(TP.classifyFailure({ message: 'no adapter registered for provider "pi-ai"', code: 'NO_ADAPTER' }), 'other')
+  assert.equal(TP.classifyFailure(null), 'other')
+})
+
+t('summarize：新鲜触顶信号 + 估算只用了 66.5% → 存疑，不算已触顶', () => {
+  const now = Date.UTC(2026, 8, 7, 12, 0, 0)
+  const s = sumWith(6651.5, 10000, { quotaHitAt: now - 60000 })
+  assert.equal(s.pct, 66.5)
+  assert.equal(s.quotaHitAt, null, '不该把剩 3348 Cr 显示成已触顶')
+  assert.equal(s.quotaHitSuspectAt, now - 60000)
+  assert.equal(s.alert.level, 'ok', '存疑不得伪造周额度告警：' + s.alert.level)
+})
+
+t('summarize：新鲜触顶信号 + 估算确实接近上限 → 确认触顶并抬级别', () => {
+  const now = Date.UTC(2026, 8, 7, 12, 0, 0)
+  const s = sumWith(9500, 10000, { quotaHitAt: now - 60000 })
+  assert.equal(s.quotaHitAt, now - 60000)
+  assert.equal(s.quotaHitSuspectAt, null)
+  assert.notEqual(s.alert.level, 'ok', '真触顶至少要 warn')
+})
+
+t('summarize：过期的触顶/限流信号不再下发（阈值取模块常量）', () => {
+  const now = Date.UTC(2026, 8, 7, 12, 0, 0)
+  const stale = sumWith(9500, 10000, {
+    quotaHitAt: now - TP.QUOTA_HIT_TTL_MS - 1000,
+    rateLimitedAt: now - TP.RATE_LIMIT_TTL_MS - 1000,
+  })
+  assert.equal(stale.quotaHitAt, null)
+  assert.equal(stale.quotaHitSuspectAt, null)
+  assert.equal(stale.rateLimitedAt, null)
+  // 95% 本身仍要说事：级别由 pct 决定，不靠旧信号
+  assert.notEqual(stale.alert.level, 'ok')
+})
+
+t('summarize：限流单独成态，既不抬级别也不盖住真实用量', () => {
+  const now = Date.UTC(2026, 8, 7, 12, 0, 0)
+  const s = sumWith(6651.5, 10000, { rateLimitedAt: now - 60000 })
+  assert.equal(s.rateLimitedAt, now - 60000)
+  assert.equal(s.quotaHitAt, null)
+  assert.equal(s.alert.level, 'ok')
+  assert.equal(s.used, 6651.5)
+  assert.equal(s.remaining, 3348.5)
+  const expired = sumWith(6651.5, 10000, { rateLimitedAt: now - TP.RATE_LIMIT_TTL_MS - 1 })
+  assert.equal(expired.rateLimitedAt, null)
+  // 真触顶时以触顶为准，限流让位
+  const both = sumWith(9900, 10000, { quotaHitAt: now - 60000, rateLimitedAt: now - 60000 })
+  assert.ok(both.quotaHitAt)
+  assert.equal(both.rateLimitedAt, null)
+})
+
 console.log('\n' + passed + ' passed' + (process.exitCode ? ' (有失败)' : ''))

@@ -4,7 +4,8 @@
 //   · 事件流实时累计 Credits → /dsh-whale/qwen.json
 //   · last-turn.json 的 credits / amount 分轨
 //   · size.json 的 display / qwenWarnPct 往返
-//   · 触顶 turn/end(error) → 告警升级
+//   · 失败信号分诊：429 限流 ≠ 周额度触顶；真触顶要估算也接近上限
+//   · 触顶 / 存疑 / 限流 三态各自的告警与落盘行为
 // 全程用临时 DSH_HOME，绝不碰用户真账本。
 //   node test/whale-host-sim.test.mjs
 import fs from 'node:fs'
@@ -15,6 +16,7 @@ import { fileURLToPath } from 'node:url'
 
 const PKG = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'dshw-sim-'))
+const TMP_DIRS = [] // 各场景临时家目录，跑完统一清
 process.env.DSH_HOME = TMP // 必须在 import 之前设置：模块加载时解析路径
 
 const routes = new Map()
@@ -156,35 +158,71 @@ t('bailian 流量未计入 Credits', Math.abs(q.used - beforeUsed) < 0.01, befor
 const turn2 = (await request('GET', '/dsh-whale/last-turn.json')).json
 t('bailian 轮次走 ¥ 价目（amount 有值、credits 为空）', turn2.amount !== null && turn2.credits === null, JSON.stringify({ amount: turn2.amount, credits: turn2.credits }))
 
-console.log('\n[事件] 触顶 → 告警升级')
+console.log('\n[事件] 429 限流不是触顶（本机 2026-09-07 真实抓包）')
+// 这条 payload 逐字来自 一次真实 429 的 turn/end（本机抓包）：百炼套餐网关
+// 每分钟 token 配额(TPM)打满时回的就是它，文案里带 quota/exhausted，旧判定
+// 把它算成周额度触顶，于是 66.5% 的用量长期显示「已触顶 · 暂停」。
+const TPM_429 = {
+  message: '429: {"message":"Allocated quota exceeded, please increase your quota limit. ' +
+    'For details, see: https://www.alibabacloud.com/help/en/model-studio/error-code#token-limit",' +
+    '"id":"c82db889-37e8-4c02-9064-4f0253385854","type":"insufficient_quota","code":"insufficient_quota"}',
+  code: 'QUOTA',
+}
+emit('session/event', { id: 's1' }, { type: 'request/context', data: { provider: 'tokenplan', model: 'qwen3.8-flash' } })
+emit('session/event', { id: 's1' }, { type: 'turn/end', data: { turn: 2, reason: { kind: 'error', error: TPM_429 } } })
+q = (await request('GET', '/dsh-whale/qwen.json?r=3')).json
+t('TPM 限流不记触顶', !q.quotaHitAt, JSON.stringify({ quotaHitAt: q.quotaHitAt }))
+t('TPM 限流记成 rateLimitedAt', !!q.rateLimitedAt, String(q.rateLimitedAt))
+t('限流不得伪造告警级别（1.1% 用量仍是 ok）', q.alert.level === 'ok' && q.alert.shouldAnnounce === false, JSON.stringify(q.alert))
+t('限流不抹掉真实用量', q.used > 0 && q.remaining > 0, 'used=' + q.used + ' pct=' + q.pct)
+
+console.log('\n[事件] 真触顶：估算用量确实接近上限时才成立')
+// 把上限压到 120 Cr，当前累计（~112 Cr）就是 9x%，属于「该信这个报错」的区间
+await request('PUT', '/dsh-whale/size.json', { scale: 0.3, display: 'qwen', qwenCap: 120, qwenWarnPct: 70 })
 emit('session/event', { id: 's1' }, { type: 'request/context', data: { provider: 'tokenplan', model: 'qwen3.8-flash' } })
 emit('session/event', { id: 's1' }, {
   type: 'turn/end',
-  data: { turn: 2, reason: { kind: 'error', error: { message: '429 Allocated quota exceeded, please try later', code: 'Throttling.AllocationQuota', status: 429 } } },
+  data: { turn: 4, reason: { kind: 'error', error: { message: '403 本周套餐额度已用尽，请等待重置', code: 'QUOTA', status: 403 } } },
 })
-q = (await request('GET', '/dsh-whale/qwen.json?r=3')).json
-t('quotaHitAt 已记录', !!q.quotaHitAt)
+q = (await request('GET', '/dsh-whale/qwen.json?r=4')).json
+t('接近上限时的额度报错记为触顶', !!q.quotaHitAt, 'pct=' + q.pct + ' quotaHitAt=' + q.quotaHitAt)
 t('级别至少 warn 且带 shouldAnnounce', ['warn', 'high', 'exhausted'].indexOf(q.alert.level) >= 0 && q.alert.shouldAnnounce === true, JSON.stringify(q.alert))
-const q2 = (await request('GET', '/dsh-whale/qwen.json?r=4')).json
+const q2 = (await request('GET', '/dsh-whale/qwen.json?r=5')).json
 t('同窗口同级不重复冒泡', q2.alert.shouldAnnounce === false)
 
-console.log('\n[事件] 归属收紧：不该算触顶的两种失败')
-const qh0 = (await request('GET', '/dsh-whale/qwen.json?r=5')).json.quotaHitAt || 0
+console.log('\n[事件] 额度报错 + 估算还剩很多 → 只能算存疑')
+await request('PUT', '/dsh-whale/size.json', { scale: 0.3, display: 'qwen', qwenCap: 10000, qwenWarnPct: 70 })
+emit('session/event', { id: 's1' }, { type: 'request/context', data: { provider: 'tokenplan', model: 'qwen3.8-flash' } })
+emit('session/event', { id: 's1' }, {
+  type: 'turn/end',
+  data: { turn: 5, reason: { kind: 'error', error: { message: '403 quota exhausted', code: 'QUOTA', status: 403 } } },
+})
+const qs = (await request('GET', '/dsh-whale/qwen.json?r=6')).json
+t('低用量下的额度报错不显示已触顶', !qs.quotaHitAt, 'pct=' + qs.pct)
+t('但要留痕成存疑，不能当无事发生', !!qs.quotaHitSuspectAt, JSON.stringify({ s: qs.quotaHitSuspectAt, p: qs.pct }))
+t('存疑也不抬高级别', qs.alert.level === 'ok', JSON.stringify(qs.alert))
+
+console.log('\n[事件] 归属收紧：不该算触顶的失败')
+const rl0 = (await request('GET', '/dsh-whale/qwen.json?r=7')).json.rateLimitedAt // 上面 TPM 限流留下的
 emit('session/event', { id: 's9' }, { type: 'request/context', data: { provider: 'bailian', model: 'qwen3.8-flash' } })
 emit('session/event', { id: 's9' }, {
   type: 'turn/end',
   data: { turn: 1, reason: { kind: 'error', error: { message: '429 Allocated quota exceeded, please try later', code: 'QUOTA' } } },
 })
-const qa = (await request('GET', '/dsh-whale/qwen.json?r=6')).json
-t('非套餐 provider 的 quota 报错不刷新触顶', (qa.quotaHitAt || 0) === qh0, JSON.stringify({ before: qh0, after: qa.quotaHitAt }))
+const qa = (await request('GET', '/dsh-whale/qwen.json?r=8')).json
+t('非套餐 provider 的 quota 报错不刷新触顶', !qa.quotaHitAt, JSON.stringify({ quotaHitAt: qa.quotaHitAt }))
+t('非套餐 provider 也不刷新限流标记', qa.rateLimitedAt === rl0, JSON.stringify({ before: rl0, after: qa.rateLimitedAt }))
+const before = (await request('GET', '/dsh-whale/qwen.json?r=9')).json
 emit('session/event', { id: 's1' }, { type: 'request/context', data: { provider: 'tokenplan', model: 'qwen3.8-flash' } })
 emit('session/event', { id: 's1' }, {
   type: 'turn/end',
-  data: { turn: 3, reason: { kind: 'error', error: { message: '429 Too many requests, please slow down', code: 'RATE_LIMITED' } } },
+  data: { turn: 6, reason: { kind: 'error', error: { message: '403: Free quota exhausted. To continue accessing the model on a paid basis, please add funds', code: 'AUTH', status: 403 } } },
 })
-const qb = (await request('GET', '/dsh-whale/qwen.json?r=7')).json
-t('纯限流（无额度字样）不算触顶', (qb.quotaHitAt || 0) === qh0, JSON.stringify({ before: qh0, after: qb.quotaHitAt }))
-t('限流也不会压低已显示的用量', qb.pct > 0 && qb.used > 0, 'pct=' + qb.pct)
+const qf = (await request('GET', '/dsh-whale/qwen.json?r=10')).json
+t('百炼免费额度耗尽不新增任何额度信号',
+  qf.quotaHitAt === before.quotaHitAt && qf.quotaHitSuspectAt === before.quotaHitSuspectAt && qf.rateLimitedAt === rl0,
+  JSON.stringify({ h: qf.quotaHitAt, s: qf.quotaHitSuspectAt, r: qf.rateLimitedAt }))
+t('限流也不会压低已显示的用量', qf.pct > 0 && qf.used > 0, 'pct=' + qf.pct)
 
 console.log('\n[配置] size.json 往返')
 const put = await request('PUT', '/dsh-whale/size.json', {
@@ -219,8 +257,49 @@ if (fs.existsSync(ledFile)) {
   const led = JSON.parse(fs.readFileSync(ledFile, 'utf8'))
   const keys = Object.keys(led.days)
   t('账本按本地日记一天', keys.length === 1 && /^\d{4}-\d{2}-\d{2}$/.test(keys[0]), keys.join(','))
-  t('落盘值含 credits/alert/quotaHitAt', led.days[keys[0]].credits > 0 && !!led.alert && !!led.quotaHitAt)
+  t('落盘值含 credits/alert 与两类信号', led.days[keys[0]].credits > 0 && !!led.alert && !!led.quotaHitAt && !!led.rateLimitedAt,
+    JSON.stringify({ quotaHitAt: led.quotaHitAt, rateLimitedAt: led.rateLimitedAt }))
 }
+
+console.log('\n[账本升级] 老版本记错的触顶标记必须作废')
+// 0.2.11 之前把 429 限流也记成 quotaHitAt，这条脏数据能活 6 小时；
+// 升级后见到没有 quotaHitKind 的触顶标记一律丢掉，带了 kind 的才继续生效。
+// 注意：账本一旦读进内存就不再回头看文件，所以两种家目录都要在装配前写好。
+const todayKey = new Date().toLocaleDateString('en-CA')
+const mkLegacyDay = (credits) => ({
+  credits, payg: credits / 100, tokens: credits * 1000, calls: 5,
+  models: { 'qwen3.8-flash': { credits, tokens: credits * 1000, calls: 5 } }, unknown: {},
+})
+async function bootLedger(home, ledger, tag) {
+  TMP_DIRS.push(home)
+  fs.mkdirSync(home, { recursive: true })
+  fs.writeFileSync(path.join(home, '.dshw-qwen.json'), JSON.stringify(ledger), 'utf8')
+  process.env.DSH_HOME = home
+  const routes = new Map()
+  const mod = await import(pathToFileUrl(path.join(PKG, 'lib', 'index.js')) + '?v=' + tag)
+  mod.apply({
+    webServer: { register: (r) => { routes.set(r.path, r); return () => {} }, tapIndex: () => () => {} },
+    credentials: { resolve: () => null },
+    on: () => () => {},
+    effect: () => () => {},
+  })
+  return new Promise((resolve) => {
+    routes.get('/dsh-whale/qwen.json').handler({ method: 'GET' }, {
+      writeHead() {},
+      end(b) { resolve(JSON.parse(b)) },
+    })
+  })
+}
+const seedHit = (kind) => {
+  const led = { version: 1, days: { [todayKey]: mkLegacyDay(9000) }, quotaHitAt: Date.now() - 60000, quotaHitCode: 'QUOTA' }
+  if (kind) led.quotaHitKind = 'cap'
+  return led
+}
+const qOld = await bootLedger(fs.mkdtempSync(path.join(os.tmpdir(), 'dshw-lg-old-')), seedHit(false), 'old')
+t('脏 quotaHitAt 不再下发（既不显示已触顶也不显示存疑）', !qOld.quotaHitAt && !qOld.quotaHitSuspectAt, JSON.stringify({ h: qOld.quotaHitAt, s: qOld.quotaHitSuspectAt, pct: qOld.pct }))
+t('作废标记不影响用量读数', Math.abs(qOld.used - 9000) < 1 && qOld.pct === 90, 'used=' + qOld.used)
+const qNew = await bootLedger(fs.mkdtempSync(path.join(os.tmpdir(), 'dshw-lg-new-')), seedHit(true), 'new')
+t('带 quotaHitKind 的新标记仍正常生效', !!qNew.quotaHitAt && qNew.pct === 90, JSON.stringify({ h: qNew.quotaHitAt, pct: qNew.pct }))
 
 console.log('\n[优雅降级] 无 key / 无账本（换一座空 DSH_HOME 重新装配）')
 const empty = fs.mkdtempSync(path.join(os.tmpdir(), 'dshw-empty-'))
@@ -252,3 +331,4 @@ t('空环境不含任何密钥字段', JSON.stringify(qe.json).indexOf('sk-') ==
 console.log('\n' + passed + ' 项通过')
 fs.rmSync(TMP, { recursive: true, force: true })
 fs.rmSync(empty, { recursive: true, force: true })
+for (const d of TMP_DIRS) fs.rmSync(d, { recursive: true, force: true })

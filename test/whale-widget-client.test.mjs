@@ -50,6 +50,8 @@ function qwenOk(over) {
       unknownModels: [],
       payg: { windowCny: 7.2, ledgerCny: 7.2, planPriceCny: 139, savedCny: -131.8, roiPercent: 5.2 },
       quotaHitAt: null,
+      quotaHitSuspectAt: null,
+      rateLimitedAt: null,
       alert: { level: 'ok', label: '', pct: 7.2, warnPct: 70, shouldAnnounce: false },
       note: '',
       generatedAt: Date.now(),
@@ -526,4 +528,85 @@ console.log(String.fromCharCode(10) + '[告警持久性] 不自动关 + 到点�
   t('回到安全线后不再弹告警', txt(w, '.dshwv-amount') !== '72.5%', txt(w, '.dshwv-amount'))
   w.close()
 }
+console.log('\n[额度三态] 限流绝不许显示成「已触顶 · 暂停」')
+{
+  // 本机事故复现：周额度实际用了 66.5%，一次 429 TPM 限流把气泡钉成已触顶。
+  // 服务端 classifyFailure 之后不会给 quotaHitAt，只给 rateLimitedAt。
+  const env = makeWindow({
+    size: { display: 'qwen' },
+    qwen: qwenOk({
+      used: 6651.5, remaining: 3348.5, pct: 66.5,
+      rateLimitedAt: Date.now(),
+      alert: { level: 'ok', label: '', pct: 66.5, warnPct: 70, shouldAnnounce: false },
+    }),
+  })
+  const w = env.w
+  await sleep(320)
+  t('限流态提示行写「限流中」', /限流中/.test(txt(w, '.dshwv-hint')), JSON.stringify(txt(w, '.dshwv-hint')))
+  t('限流态不出现「已触顶」', txt(w, '.dshwv-hint').indexOf('已触顶') === -1, JSON.stringify(txt(w, '.dshwv-hint')))
+  t('限流态仍显示剩余 Credits', /剩 3349|剩 3348/.test(txt(w, '.dshwv-hint')), JSON.stringify(txt(w, '.dshwv-hint')))
+  t('限流态转橙不转红', el(w, '.dshwv-amount').style.color === 'rgb(224, 122, 31)', el(w, '.dshwv-amount').style.color)
+  t('限流态不挂常驻红点', el(w, '.dshwv-root').className.indexOf('dshwv-alert-over') < 0)
+  w.close()
+}
+{
+  // 颜色判序：快用完了该红就红，不能被一条限流信号压成橙色
+  const env = makeWindow({
+    size: { display: 'qwen' },
+    qwen: qwenOk({
+      used: 9200, remaining: 800, pct: 92, rateLimitedAt: Date.now(),
+      alert: { level: 'high', label: '周额度即将用尽', pct: 92, warnPct: 70, shouldAnnounce: false },
+    }),
+  })
+  const w = env.w
+  await sleep(320)
+  clickBubble(w) // high 级别会弹常驻告警，点掉看常态画面
+  await sleep(150)
+  pickAcct(w, 'ds')
+  await sleep(120)
+  pickAcct(w, 'qwen')
+  await sleep(120)
+  t('92% 撞上限流仍是红色，不被橙色降级', el(w, '.dshwv-amount').style.color === 'rgb(224, 67, 63)', el(w, '.dshwv-amount').style.color)
+  t('但提示行照实说限流，不喊已触顶', /限流中/.test(txt(w, '.dshwv-hint')) && txt(w, '.dshwv-hint').indexOf('已触顶') === -1, JSON.stringify(txt(w, '.dshwv-hint')))
+  w.close()
+}
+{
+  // 真触顶（quotaHitAt 由服务端确认后下发）才是那套红字与措辞
+  const env = makeWindow({
+    size: { display: 'qwen' },
+    qwen: qwenOk({
+      used: 10000, remaining: 0, pct: 100, quotaHitAt: Date.now(),
+      alert: { level: 'exhausted', label: '套餐额度已触顶', pct: 100, warnPct: 70, shouldAnnounce: false },
+    }),
+  })
+  const w = env.w
+  await sleep(320)
+  t('真触顶弹常驻告警泡泡', el(w, '.dshwv-bubble').className.indexOf('dshwv-bubble-open') !== -1)
+  t('告警金额行是 100%', txt(w, '.dshwv-amount') === '100%', txt(w, '.dshwv-amount'))
+  clickBubble(w) // 告警必须人点掉
+  await sleep(150)
+  pickAcct(w, 'ds') // 切一次显示态，看到确认后的常态画面
+  await sleep(120)
+  pickAcct(w, 'qwen')
+  await sleep(120)
+  t('真触顶才写「已触顶 · 暂停」', txt(w, '.dshwv-hint') === '已触顶 · 暂停', JSON.stringify(txt(w, '.dshwv-hint')))
+  t('真触顶转红', el(w, '.dshwv-amount').style.color === 'rgb(224, 67, 63)', el(w, '.dshwv-amount').style.color)
+  w.close()
+}
+{
+  // 存疑：报错说额度不足，但估算还剩三成 —— 只能说存疑，不能喊触顶
+  const env = makeWindow({
+    size: { display: 'qwen' },
+    qwen: qwenOk({
+      used: 6651.5, remaining: 3348.5, pct: 66.5, quotaHitSuspectAt: Date.now(),
+      alert: { level: 'ok', label: '', pct: 66.5, warnPct: 70, shouldAnnounce: false },
+    }),
+  })
+  const w = env.w
+  await sleep(320)
+  t('存疑态写「存疑」不写「已触顶」', /存疑/.test(txt(w, '.dshwv-hint')) && txt(w, '.dshwv-hint').indexOf('已触顶') === -1, JSON.stringify(txt(w, '.dshwv-hint')))
+  t('存疑态转橙不转红', el(w, '.dshwv-amount').style.color === 'rgb(224, 122, 31)', el(w, '.dshwv-amount').style.color)
+  w.close()
+}
+
 console.log('\n' + passed + ' 项通过')

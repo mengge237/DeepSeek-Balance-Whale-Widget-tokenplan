@@ -248,11 +248,20 @@ payload 里的 `source` 会告诉你是 `ledger` / `live` / `ledger+live` / `non
 
 - 套餐是「自首次调用起 7 天一个固定周期，Standard = 10,000 Credits，5 小时限流当前暂停、过期不结转」。
 - 锚点优先取配置 `qwenWindowAnchor`，否则退到「账本里第一个有量的一天」，最后才是「现在」。返回值里 `anchorSource` 会说明用的哪种，`dayIndex`（第 N/7 天）与 `resetInMs` 都由它推出。
-- 阈值默认 70%（菜单「套餐告警」可改）。达到即 `warn`，`≥max(90%, 阈值+20)` 升 `high`，100% 或抓到 429 触顶
-  为 `exhausted`。**同一周期同一级别只自动冒一次泡**（`shouldAnnounce` 由服务端现算并记账，多标签页也只弹一次），
+- 阈值默认 70%（菜单「套餐告警」可改）。达到即 `warn`，`≥max(90%, 阈值+20)` 升 `high`，100% 为 `exhausted`。
+  **同一周期同一级别只自动冒一次泡**（`shouldAnnounce` 由服务端现算并记账，多标签页也只弹一次），
   级别升级或换新周期会再提醒；点一下气泡即可确认关闭。
-- 套餐轮次的「上一轮对话消耗」泡泡改显示 `≈ x Cr`；`turn/end` 里抓到 quota 类错误会记 `quotaHitAt`，
-  面板转红并在 48h 内保持警报。
+- 套餐轮次的「上一轮对话消耗」泡泡改显示 `≈ x Cr`。
+- `turn/end` 的失败信号分三类处理（`classifyFailure`），**429 永远不算触顶**：
+  | 分类 | 判据 | 记成 | 显示 |
+  |---|---|---|---|
+  | `throttle` | 429 / `Throttling.*` / `#token-limit` / rate limit / 稍后重试 | `rateLimitedAt`（15min 过期） | 橙字「限流中 · 剩 N」，不弹告警、不挂红点 |
+  | `freeQuota` | `free quota` / `use free tier only` | 忽略 | 与套餐无关 |
+  | `cap` | `Insufficient Balance` / 额度用尽 / 402+quota | `quotaHitAt`（6h 过期） | 估算 `pct ≥ 85%` 才确认「已触顶 · 暂停」，否则只算「额度存疑」 |
+  为什么要分：套餐网关在**每分钟 token 配额（TPM）**打满时回的是
+  `429 Allocated quota exceeded ... #token-limit`（`type:"insufficient_quota"`），文案里带 quota/exhausted，
+  只看关键词就会把它当成周额度用尽 —— 一次限流能让 68% 的用量长期显示「已触顶 · 暂停」，
+  还会把 `alert.level` 从 ok 伪造成 warn。所以额度类信号必须由估算用量二次把关。
 
 ### 接口
 
@@ -268,6 +277,9 @@ payload 里的 `source` 会告诉你是 `ledger` / `live` / `ledger+live` / `non
   "unknownModels": [],
   "payg": { "windowCny": 5.82, "planPriceCny": 139, "roiPercent": 4.2 },
   "quotaHitAt": null,
+  "quotaHitSuspectAt": null,
+  "rateLimitedAt": null,
+  "capConfirmPct": 85,
   "alert": { "level": "ok", "label": "", "pct": 5.8, "warnPct": 70, "shouldAnnounce": false } }
 ```
 

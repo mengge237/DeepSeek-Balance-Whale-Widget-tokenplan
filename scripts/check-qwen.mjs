@@ -163,6 +163,16 @@ try {
     if (data.ok) {
       ok('payload 含 alert 结构', !!data.alert && typeof data.alert.level === 'string', JSON.stringify(data.alert))
       ok('payload 不含密钥字段', JSON.stringify(data).indexOf('api') === -1 && JSON.stringify(data).indexOf('sk-') === -1)
+      // 活体探针：本机真出过事 —— 一次 429 每分钟限流让 66.5% 的用量显示成
+      // 「已触顶 · 暂停」。远没到上限却报触顶，就是那个 bug 复发。
+      ok('触顶标记与用量自洽（pct < ' + TP.CAP_CONFIRM_PCT + '% 不得确认触顶）',
+        !(data.quotaHitAt && data.pct < TP.CAP_CONFIRM_PCT),
+        'pct=' + data.pct + ' quotaHitAt=' + (data.quotaHitAt || 'null'))
+      ok('跑的是已分诊限流/触顶的新构建', 'rateLimitedAt' in data && 'quotaHitSuspectAt' in data,
+        '缺这两个字段 = 改完还没重启 dsh web')
+      ok('告警级别不由额度信号之外的东西伪造',
+        !(data.alert && data.alert.level !== 'ok' && !data.quotaHitAt && data.pct < (data.alert.warnPct || 70)),
+        JSON.stringify({ level: data.alert && data.alert.level, pct: data.pct, warnPct: data.alert && data.alert.warnPct }))
     }
   }
 } catch (err) {
