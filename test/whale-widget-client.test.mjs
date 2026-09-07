@@ -66,6 +66,12 @@ const QWEN_WARN = qwenOk({
   payg: { windowCny: 72.5, ledgerCny: 72.5, planPriceCny: 139, savedCny: -66.5, roiPercent: 52.2 },
   alert: { level: 'warn', label: '周额度告警', pct: 72.5, warnPct: 70, shouldAnnounce: true },
 })
+// 级别升档用（warn → high）：验证「没到重弹间隔但升一档要立刻再报」
+const QWEN_HIGH = qwenOk({
+  used: 8800, remaining: 1200, pct: 88,
+  byModel: [{ model: 'qwen3.8-flash', credits: 8800, tokens: 1, calls: 800 }],
+  alert: { level: 'high', label: '周额度告警', pct: 88, warnPct: 70, shouldAnnounce: false },
+})
 const BALANCE = { ok: true, totalBalance: 123.45, currency: 'CNY', todayUsage: 6.7, isPeak: false }
 
 function makeWindow(opts) {
@@ -128,7 +134,7 @@ function makeWindow(opts) {
       qwenPolls++
       if (o.qwen === null) json = { ok: false, error: 'NO_DATA' }
       else {
-        var base = o.qwen || QWEN_WARN
+        var base = typeof o.qwen === 'function' ? o.qwen(qwenPolls) : (o.qwen || QWEN_WARN)
         // 服务端每次现算：同窗口同级只报一次，第 2 次起 shouldAnnounce=false
         json = qwenPolls === 1 ? base : qwenOk(Object.assign({}, base, { alert: Object.assign({}, base.alert, { shouldAnnounce: false }) }))
       }
@@ -464,4 +470,60 @@ console.log('\n[自适应 v2] 先长气泡 → 再缩「估算」行 → 主行�
   moved.env.w.close()
 }
 
+
+// —— 告警持久性：不自动关、确认到点再提醒、没回安全线红点一直在 ——
+console.log(String.fromCharCode(10) + '[告警持久性] 不自动关 + 到点再提醒 + 常驻红点')
+{
+  const env = makeWindow({ qwen: QWEN_WARN })
+  const w = env.w
+  await sleep(400)
+  t('告警泡泡自动弹出', el(w, '.dshwv-bubble').className.indexOf('bubble-open') >= 0)
+  t('告警金额行显示百分比', txt(w, '.dshwv-amount') === '72.5%', txt(w, '.dshwv-amount'))
+  t('超标时红点挂上', el(w, '.dshwv-root').className.indexOf('dshwv-alert-over') >= 0)
+  t('源码里不再排自关定时器', client.indexOf('setTimeout(hideQwenAlert') === -1)
+  await sleep(1800)
+  t('等 1.8s 依旧开着（不会自己消失）', el(w, '.dshwv-bubble').className.indexOf('bubble-open') >= 0)
+
+  let off = 0
+  const realNow = Date.now
+  w.Date.now = function () { return realNow() + off }
+  clickWhale(w)
+  await sleep(250)
+  t('点鲸鱼即确认关闭', el(w, '.dshwv-bubble').className.indexOf('bubble-open') < 0)
+  t('确认后红点仍留（还没回安全线）', el(w, '.dshwv-root').className.indexOf('dshwv-alert-over') >= 0)
+
+  clickWhale(w) // 顺带 fetchQwen：静默期内不该重弹
+  await sleep(350)
+  t('静默期内不重弹', txt(w, '.dshwv-amount') !== '72.5%', txt(w, '.dshwv-amount'))
+
+  off = 3600001 // 越过 warn 的 60min 重弹间隔
+  clickWhale(w)
+  await sleep(350)
+  t('到点同级还会再提醒', txt(w, '.dshwv-amount') === '72.5%', txt(w, '.dshwv-amount'))
+  w.close()
+}
+{
+  const env = makeWindow({ qwen: function (n) { return n <= 2 ? QWEN_WARN : QWEN_HIGH } })
+  const w = env.w
+  await sleep(400)
+  clickWhale(w) // 确认掉 warn 告警（第二次轮询仍是 warn，静默）
+  await sleep(300)
+  const silenced = txt(w, '.dshwv-amount') !== '72.5%'
+  clickWhale(w) // 第三次轮询：级别升到 high
+  await sleep(350)
+  t('未到重弹间隔但级别升档，立即再弹', silenced && txt(w, '.dshwv-amount') === '88%', txt(w, '.dshwv-amount'))
+  t('升档后红点还在', el(w, '.dshwv-root').className.indexOf('dshwv-alert-over') >= 0)
+  w.close()
+}
+{
+  const env = makeWindow({ qwen: function (n) { return n <= 1 ? QWEN_WARN : qwenOk() } })
+  const w = env.w
+  await sleep(400)
+  t('首轮是告警', txt(w, '.dshwv-amount') === '72.5%', txt(w, '.dshwv-amount'))
+  clickWhale(w) // 确认 + 触发读到 ok 的那次轮询
+  await sleep(450)
+  t('回到安全线后红点消失', el(w, '.dshwv-root').className.indexOf('dshwv-alert-over') < 0)
+  t('回到安全线后不再弹告警', txt(w, '.dshwv-amount') !== '72.5%', txt(w, '.dshwv-amount'))
+  w.close()
+}
 console.log('\n' + passed + ' 项通过')
