@@ -11,6 +11,9 @@
   ],
   "type": "module",
   "main": "lib/index.js",
+  "scripts": {
+    "check": "node scripts/check-widget-js.mjs"
+  },
   "files": [
     "lib",
     "assets",
