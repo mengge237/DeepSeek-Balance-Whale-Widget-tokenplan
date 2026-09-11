@@ -1,5 +1,9 @@
 # DSH 小鲸鱼余额挂件（DeepSeek Balance Whale Widget）
 
+![lang](https://img.shields.io/badge/lang-JavaScript-informational) ![status](https://img.shields.io/badge/status-readonly-yellow)
+
+> **这是 fork**，上游是 [MeteorNOX/DeepSeek-Balance-Whale-Widget](https://github.com/MeteorNOX/DeepSeek-Balance-Whale-Widget)。我在这里的提交：[#78 (open) test(widget): 加一个零依赖自检，挡住模板字面量吃掉反斜杠的两类静默失效；#74 (open) feat(tokenplan): 接入阿里云百炼 Token Plan（Qwen）周额度用量检测；#73 (open) 建议：接入阿里云百炼 Token Plan（Qwen）的周 Credits 用量监控（实现已就绪）]。日常使用请取主仓库，本 fork 只用于上游投递与本地补丁。
+
 ![DSH 小鲸鱼余额挂件](assets/DSH2.png)
 
 DeepSeek Harness（DSH）Web 界面右下角的常驻余额挂件：小鲸鱼气泡图 + DeepSeek API 余额 + 今日已用 + 每轮对话消耗统计，每次打开界面自动启用。本项目是标准 DSH 插件包，可通过 `dsh plugin` 安装/卸载。
